@@ -1,0 +1,45 @@
+{
+	{$CADDY_GLOBAL_OPTIONS}
+
+	admin {$CADDY_SERVER_ADMIN_HOST:localhost}:{$CADDY_SERVER_ADMIN_PORT:2019}
+
+	frankenphp {
+		worker {
+			# Explicit rather than Octane's {$APP_PUBLIC_PATH}: Winter's Application::publicPath()
+			# returns the project root, because its public directory is opt-in and produced by
+			# `winter:mirror`. Octane derives both the worker path and the web root from
+			# publicPath(), so using its default here would look for the worker in the project root
+			# and, worse, serve the project root over HTTP.
+			file "{$SERVER_ROOT}/frankenphp-worker.php"
+
+			# Octane resolves --workers into a complete directive, empty when set to "auto", so the
+			# count is not written literally here: Caddy's `num` requires an integer.
+			{$CADDY_SERVER_WORKER_DIRECTIVE}
+			{$CADDY_SERVER_WATCH_DIRECTIVES}
+		}
+	}
+}
+
+{$CADDY_EXTRA_CONFIG}
+
+{$CADDY_SERVER_SERVER_NAME:$SERVER_NAME} {
+	log {
+		level {$CADDY_SERVER_LOG_LEVEL:INFO}
+	}
+
+	route {
+		# The mirrored public directory, never the project root, so .env, vendor/, storage/ and the
+		# module sources are not reachable over HTTP.
+		root * "{$SERVER_ROOT}"
+
+		encode zstd br gzip
+
+		{$CADDY_SERVER_EXTRA_DIRECTIVES}
+
+		php_server {
+			index frankenphp-worker.php
+			try_files {path} frankenphp-worker.php
+			resolve_root_symlink
+		}
+	}
+}

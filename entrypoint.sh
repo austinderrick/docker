@@ -237,6 +237,49 @@ fi
 # Run "winter:mirror" on startup to pickup any plugins and themes mounted
 php artisan winter:mirror public --relative
 
+# Resolve the default command sentinel to the selected runtime. An explicit command given to
+# `docker run` replaces the sentinel and therefore skips this entirely.
+if [ "$1" = "winter-server" ]; then
+	shift
+
+	case "${WINTER_RUNTIME:-classic}" in
+		octane)
+			if ! php artisan --raw list 2>/dev/null | grep -q '^octane:start'; then
+				echo "WINTER_RUNTIME=octane requires laravel/octane and a Winter release with worker support." >&2
+				echo "Falling back to the classic runtime." >&2
+				set -- --config /etc/frankenphp/Caddyfile --adapter caddyfile "$@"
+			else
+				# Winter rebuilds public/ on every start via `winter:mirror` above, so the worker
+				# entry point has to be placed after mirroring rather than baked into the image.
+				if [ ! -f /usr/local/share/winter/frankenphp-worker.php ]; then
+					echo "Winter's FrankenPHP worker entry point is missing from the image." >&2
+					exit 1
+				fi
+
+				mkdir -p "${SERVER_ROOT}"
+				cp /usr/local/share/winter/frankenphp-worker.php "${SERVER_ROOT}/frankenphp-worker.php"
+
+				# A Docker-owned Caddyfile is passed rather than letting Octane generate one, because
+				# Octane derives both the worker path and the web root from Application::publicPath(),
+				# which in Winter is the project root. Its generated config would therefore serve the
+				# whole project over HTTP instead of the mirrored public directory.
+				set -- php artisan octane:start \
+					--server=frankenphp \
+					--host=0.0.0.0 \
+					--port="${OCTANE_PORT:-8000}" \
+					--workers="${OCTANE_WORKERS:-auto}" \
+					--max-requests="${OCTANE_MAX_REQUESTS:-500}" \
+					--caddyfile=/etc/frankenphp/Caddyfile.octane \
+					"$@"
+			fi
+			;;
+		*)
+			# Byte-for-byte the arguments this image used before the sentinel existed.
+			set -- --config /etc/frankenphp/Caddyfile --adapter caddyfile "$@"
+			;;
+	esac
+fi
+
 # first arg is `-f` or `--some-option`
 if [ "${1#-}" != "$1" ]; then
 	set -- frankenphp run "$@"

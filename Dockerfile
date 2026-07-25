@@ -22,6 +22,10 @@ RUN \
     gd \
     intl \
     memcached \
+    # Required by `octane:start`, which registers signal handlers for SIGINT, SIGTERM and SIGHUP so
+    # the worker can be stopped and reloaded. Those constants come from pcntl, so the command fails
+    # with "Undefined constant SIGINT" without it even though Octane calls no pcntl_* function.
+    pcntl \
     pdo_mysql \
     pdo_pgsql \
     pdo_sqlsrv \
@@ -54,11 +58,35 @@ RUN \
     && chown -R ${USER}:${USER} /winter
 
 COPY entrypoint.sh /entrypoint.sh
+COPY install-winter.sh /usr/local/bin/install-winter
+RUN chmod +x /usr/local/bin/install-winter
+
+# Worker-mode assets. Kept outside the project so `winter:mirror` cannot remove them; the entrypoint
+# copies the worker entry point into the mirrored public directory on each start.
+COPY Caddyfile.octane /etc/frankenphp/Caddyfile.octane
+COPY frankenphp-worker.php /usr/local/share/winter/frankenphp-worker.php
 COPY config/php.ini /usr/local/etc/php/conf.d/winter.ini
 
 # Switch to user
 USER ${USER}
-RUN composer create-project --no-progress --no-interaction --no-scripts --no-dev wintercms/winter /winter ${WINTER_VERSION}
+
+# Redeclared inside the stage: an ARG declared before FROM is only in scope for the FROM line, so
+# without this the create-project below expanded to an empty string and silently installed the
+# latest stable release regardless of --build-arg WINTER_VERSION.
+ARG WINTER_VERSION="v1.2.11"
+
+# Optional VCS repository to build from instead of Packagist, so CI can build an unreleased branch
+# without publishing it. Example:
+#   --build-arg WINTER_REPOSITORY=https://github.com/wintercms/winter
+ARG WINTER_REPOSITORY=""
+
+# Optional matching Storm branch. Winter and Storm are developed in lockstep, so building an
+# unreleased Winter branch usually means testing an unreleased Storm alongside it.
+ARG STORM_REPOSITORY=""
+ARG STORM_VERSION="dev-wip/1.3"
+
+RUN STORM_VERSION="${STORM_VERSION}" \
+    /usr/local/bin/install-winter "${WINTER_VERSION}" "${WINTER_REPOSITORY}" "${STORM_REPOSITORY}"
 
 # Install Node for Mix/Vite support
 ARG NODE_VERSION="v24.14.0"
@@ -90,5 +118,15 @@ ENV BACKEND_URI="backend"
 ENV ROUTES_CACHE="true"
 ENV ASSET_CACHE="true"
 
-CMD ["--config", "/etc/frankenphp/Caddyfile", "--adapter", "caddyfile"]
+# Runtime selection. "classic" serves one request per bootstrap, exactly as this image always has,
+# and remains the default. "octane" keeps the application in memory between requests, which
+# requires a Winter release containing worker-mode support.
+ENV WINTER_RUNTIME="classic"
+ENV OCTANE_PORT="8000"
+ENV OCTANE_WORKERS="auto"
+ENV OCTANE_MAX_REQUESTS="500"
+
+# The entrypoint maps this sentinel to the runtime selected above. It is not a real executable, so
+# an explicit command still overrides it and bypasses the mapping entirely.
+CMD ["winter-server"]
 ENTRYPOINT ["/entrypoint.sh"]
