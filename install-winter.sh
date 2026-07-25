@@ -31,6 +31,24 @@ if [ -z "${VERSION}" ]; then
     exit 1
 fi
 
+# The second half of the same guard. The version is the last positional argument to
+# `composer create-project`, and Composer's argument parser treats any token starting with "-" as an
+# option, so a version of "--prefer-source" is consumed as a flag and the version defaults to latest
+# stable — the identical silent-wrong-release outcome as the empty case, but not caught by it.
+# Verified: `composer create-project --no-install psr/log /tmp/a --prefer-source` exits 0 having
+# installed latest. A "--" separator before the positional arguments does not parse here, so the value
+# is rejected instead. No Winter version or branch begins with a dash.
+case "${VERSION}" in
+    -*)
+        echo "install-winter.sh: Winter version '${VERSION}' starts with a dash." >&2
+        echo "install-winter.sh: Composer would parse it as an option and install the latest release" >&2
+        echo "install-winter.sh: instead of the version asked for, so it is refused here." >&2
+        exit 1
+        ;;
+    *)
+        ;;
+esac
+
 normalise_git_url() {
     case "$1" in
         *.git) echo "$1" ;;
