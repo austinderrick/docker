@@ -1,12 +1,18 @@
 #!/bin/sh
 #
-# Installs Winter CMS into /winter and verifies that the requested version is the one that landed.
+# Installs Winter CMS into /winter, refusing to proceed without an explicit version.
 #
 # Usage: install-winter.sh <version> [winter-repository-url] [storm-repository-url]
 #
-# The verification exists because the version arrives as a build argument. An ARG declared before
-# FROM is only in scope for the FROM line, so a mistake there expands to an empty string and
-# Composer silently installs the latest stable release instead of failing the build.
+# STORM_VERSION is read from the environment, not passed positionally, and defaults to dev-wip/1.3.
+# It only has an effect when a storm repository URL is given.
+#
+# The empty-version guard exists because the version arrives as a build argument. An ARG declared
+# before FROM is only in scope for the FROM line, so a mistake there expands to an empty string and
+# Composer silently installs the latest stable release instead of failing the build. That guard is the
+# only hard guarantee here; a version that resolves to something is left to Composer, which fails on
+# its own if the ref does not exist. What was installed is reported at the end so a mismatch is
+# visible in the build log.
 
 set -eu
 
@@ -67,6 +73,27 @@ if [ -n "${STORM_REPOSITORY}" ]; then
 fi
 
 git config --global --unset-all url."https://github.com/".insteadOf 2>/dev/null || true
+
+# Report what actually landed. wintercms/winter is the root of the created project, so Composer reports
+# it as "1.0.0+no-version-set" whatever was installed; the system module is an ordinary dependency and
+# does track it. A branch requirement round-trips exactly, so a mismatch there is worth warning about.
+# It is a warning and not a build failure on purpose: a fork whose branch name differs from the module
+# constraints it pins is a legitimate configuration, and failing it would block that for no safety gain
+# the empty-version guard above does not already provide.
+INSTALLED_VERSION="$(php -r '
+    require "/winter/vendor/autoload.php";
+    echo Composer\InstalledVersions::getPrettyVersion("winter/wn-system-module") ?? "";
+')"
+
+case "${VERSION}" in
+    "${INSTALLED_VERSION}"|"v${INSTALLED_VERSION}"|"${INSTALLED_VERSION#v}")
+        ;;
+    dev-*)
+        echo "install-winter.sh: warning: asked for '${VERSION}', system module is '${INSTALLED_VERSION}'." >&2
+        ;;
+    *)
+        ;;
+esac
 
 php -r '
     require "/winter/vendor/autoload.php";
